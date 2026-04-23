@@ -33,6 +33,16 @@ class AddAccountReq(BaseModel):
     password: str = ""
 
 
+class ImportJsonReq(BaseModel):
+    accounts: list[dict[str, Any]]
+    skip_existing: bool = True
+
+
+class ImportSqliteReq(BaseModel):
+    db_path: str = Field(..., min_length=1, description="Path to openai-cpa-optimized data.db")
+    skip_reg_only: bool = True
+
+
 class AccountResp(BaseModel):
     id: int
     email: str
@@ -152,3 +162,55 @@ async def get_logs(
 async def refresh_pool(_: str = Depends(verify_admin)) -> dict[str, Any]:
     pool.refresh()
     return {"status": "success", "active_count": len(pool.get_active_accounts())}
+
+
+@router.post("/import")
+async def import_json(
+    req: ImportJsonReq,
+    _: str = Depends(verify_admin),
+) -> dict[str, Any]:
+    from services.importer import import_from_json
+
+    def _add(**kwargs) -> bool:
+        existing = db.get_account_by_email(kwargs["email"])
+        if existing and req.skip_existing:
+            return False
+        acc = db.add_account(**kwargs)
+        pool.add_account(acc)
+        return True
+
+    result = import_from_json(req.accounts, _add)
+    return {
+        "status": "success",
+        "total": result.total,
+        "success": result.success,
+        "skipped": result.skipped,
+        "failed": result.failed,
+        "errors": result.errors[:20],
+    }
+
+
+@router.post("/import/sqlite")
+async def import_sqlite(
+    req: ImportSqliteReq,
+    _: str = Depends(verify_admin),
+) -> dict[str, Any]:
+    from services.importer import import_from_sqlite
+
+    def _add(**kwargs) -> bool:
+        existing = db.get_account_by_email(kwargs["email"])
+        if existing:
+            return False
+        acc = db.add_account(**kwargs)
+        pool.add_account(acc)
+        return True
+
+    result = import_from_sqlite(req.db_path, _add, skip_reg_only=req.skip_reg_only)
+    return {
+        "status": "success",
+        "total": result.total,
+        "success": result.success,
+        "skipped": result.skipped,
+        "failed": result.failed,
+        "errors": result.errors[:20],
+    }

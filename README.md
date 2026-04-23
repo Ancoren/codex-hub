@@ -86,43 +86,72 @@ codex --api-base http://your-hub-ip:8080/v1 --api-key hub-api-key
 | POST | `/admin/login` | 登录获取 token |
 | GET | `/admin/stats` | 全局统计 |
 | GET | `/admin/accounts` | 账号列表 |
-| POST | `/admin/accounts` | 添加账号 |
+| POST | `/admin/accounts` | 添加单个账号 |
+| POST | `/admin/import` | 批量导入（JSON） |
+| POST | `/admin/import/sqlite` | 从 CPA SQLite 导入 |
 | DELETE | `/admin/accounts/{id}` | 删除账号 |
 | POST | `/admin/accounts/{id}/refresh` | 手动刷新 token |
 | GET | `/admin/logs` | 请求日志 |
 | POST | `/admin/pool/refresh` | 刷新账号池 |
 
-## 负载均衡策略
+## 批量导入账号
 
-`HUB_STRATEGY` 环境变量：
+### 从 openai-cpa-optimized 自动导入
 
-| 策略 | 说明 |
-|---|---|
-| `least_used` | 选择请求数最少的账号（默认） |
-| `round_robin` | 轮询 |
-| `random` | 随机 |
-| `priority` | 按优先级（预留） |
+如果你把 CPA 和 Hub 部署在同一台机器（或共享 volume）：
 
-## 从 openai-cpa-optimized 导入账号
+```bash
+# 先登录获取 token
+TOKEN=$(curl -s -X POST http://localhost:8080/admin/login \
+  -H "Content-Type: application/json" \
+  -d '{"password": "admin"}' | jq -r .token)
 
-如果你有之前注册的账号数据库，可以直接用 SQLite 工具导出 `accounts` 表的 `email`、`token_data` 字段，然后解析 `token_data` JSON 批量导入 Hub。
+# 一键导入所有历史账号（自动跳过"仅注册成功"和无 token 的）
+curl -X POST http://localhost:8080/admin/import/sqlite \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "db_path": "/path/to/openai-cpa-optimized/data/data.db",
+    "skip_reg_only": true
+  }'
+```
 
-```python
-import json, sqlite3, requests
+返回示例：
+```json
+{
+  "status": "success",
+  "total": 150,
+  "success": 120,
+  "skipped": 25,
+  "failed": 5,
+  "errors": ["xxx: invalid token_data JSON"]
+}
+```
 
-conn = sqlite3.connect("cpa/data/data.db")
-cursor = conn.cursor()
-cursor.execute("SELECT email, token_data FROM accounts WHERE token_data LIKE '%access_token%'")
+### 从 JSON 批量导入
 
-for email, token_json in cursor.fetchall():
-    data = json.loads(token_json)
-    requests.post("http://localhost:8080/admin/accounts", json={
-        "email": email,
-        "access_token": data["access_token"],
-        "refresh_token": data.get("refresh_token", ""),
-        "id_token": data.get("id_token", ""),
-        "account_id": data.get("account_id", ""),
-    }, headers={"Authorization": "Bearer YOUR_ADMIN_TOKEN"})
+```bash
+curl -X POST http://localhost:8080/admin/import \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accounts": [
+      {"email": "a@x.com", "access_token": "eyJ...", "refresh_token": "..."},
+      {"email": "b@x.com", "access_token": "eyJ...", "refresh_token": "..."}
+    ],
+    "skip_existing": true
+  }'
+```
+
+### 实时自动推送（推荐）
+
+在 [openai-cpa-optimized](https://github.com/Ancoren/openai-cpa-optimized) 中开启 `hub` 配置，注册成功后会**自动实时推送**到 Hub，无需任何手动操作：
+
+```yaml
+hub:
+  enable: true
+  url: "http://your-hub:8080"
+  admin_password: "your-hub-admin-password"
 ```
 
 ## 环境变量
